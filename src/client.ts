@@ -125,6 +125,7 @@ export class LspClient {
       cwd: this.#options.root,
       env: { ...process.env, ...this.#options.env },
       stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
     })
     this.#child = child
     child.stdout?.on("data", (chunk: Buffer) => this.#onData(chunk))
