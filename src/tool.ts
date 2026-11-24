@@ -74,7 +74,7 @@ export function lspTool(manager: LspManager, root: string) {
     async execute(input: Input, context: { signal?: AbortSignal } = {}) {
       const { signal } = context
       signal?.throwIfAborted()
-      const file = await resolveFile(root, input.path)
+      const file = await resolveFile(root, input.path, manager.allowOutside)
       signal?.throwIfAborted()
       const content = await run(manager, root, file, input, signal)
       return {
@@ -147,15 +147,19 @@ function callItems(items: unknown[], root: string): string[] {
   return items.flatMap((item) => formatCallItem(item, root) ?? [])
 }
 
-async function resolveFile(root: string, value: string): Promise<string> {
+async function resolveFile(root: string, value: string, allowOutside = false): Promise<string> {
   const file = projectPath(root, value)
-  // OpenCode 1 asked before touching files outside the project; plugins cannot ask, so refuse.
-  // Symlinks are resolved too, so a link inside the project cannot reach outside it.
   const outside = new Error(`${value} is outside the project directory ${root}.`)
-  if (!within(root, file)) throw outside
+  if (!allowOutside) {
+    if (!within(root, file)) throw outside
+    const real = await realpath(file).catch(() => undefined)
+    if (!real) throw new Error(`File not found: ${file}`)
+    if (!within(await realpath(root).catch(() => root), real)) throw outside
+    if (!(await stat(real)).isFile()) throw new Error(`Not a file: ${file}`)
+    return file
+  }
   const real = await realpath(file).catch(() => undefined)
   if (!real) throw new Error(`File not found: ${file}`)
-  if (!within(await realpath(root).catch(() => root), real)) throw outside
   if (!(await stat(real)).isFile()) throw new Error(`Not a file: ${file}`)
   return file
 }

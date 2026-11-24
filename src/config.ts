@@ -20,6 +20,7 @@ export interface Settings {
   readonly initializeTimeoutMs: number
   readonly requestTimeoutMs: number
   readonly debug: boolean
+  readonly allowOutside: boolean
 }
 
 const NAMES = ["opencode.json", "opencode.jsonc"]
@@ -43,6 +44,7 @@ export function resolveSettings(directory: string, options: Record<string, unkno
     initializeTimeoutMs: positive(options.initializeTimeoutMs, 45_000),
     requestTimeoutMs: positive(options.requestTimeoutMs, 15_000),
     debug,
+    allowOutside: options.allowOutside !== false,
   }
 }
 

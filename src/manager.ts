@@ -1,7 +1,7 @@
 import { createRequire } from "node:module"
-import { access, lstat, open, readFile, readlink, realpath } from "node:fs/promises"
+import { access, lstat, open, readFile, readlink, realpath, stat } from "node:fs/promises"
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path"
-import { pathToFileURL } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { setTimeout as delay } from "node:timers/promises"
 import { abortable } from "./cancellation.ts"
 import { BUILTIN_ROOTS, languageIdForExtension } from "./catalog.ts"
@@ -59,7 +59,10 @@ export function extensionKey(file: string): string {
 }
 
 /** Whether the file, after resolving symlinks, is inside the project. */
-export async function insideProject(root: string, file: string): Promise<boolean> {
+export async function insideProject(root: string, file: string, allowOutside = false): Promise<boolean> {
+  if (allowOutside) {
+    try { await stat(file); return true } catch { return false }
+  }
   if (!within(root, file)) return false
   const real = await realpath(file).catch(() => undefined)
   return real !== undefined && within(await realpath(root).catch(() => root), real)
@@ -71,7 +74,10 @@ export async function insideProject(root: string, file: string): Promise<boolean
  * outside contents past the check. Elsewhere the opened inode must still sit at
  * the resolved path, which a racing swap of a parent directory could defeat.
  */
-async function readInside(root: string, file: string): Promise<string> {
+async function readInside(root: string, file: string, allowOutside = false): Promise<string> {
+  if (allowOutside && !within(root, file)) {
+    return await readFile(file, "utf8")
+  }
   const outside = new Error(`${file} is outside the project directory ${root}.`)
   if (!within(root, file)) throw outside
   const handle = await open(file, "r")
@@ -98,6 +104,21 @@ export function projectPath(root: string, value: string): string {
 export function within(root: string, file: string): boolean {
   const rel = relative(root, file)
   return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+}
+
+/**
+ * Compare two file URIs. Windows servers may report a different drive-letter
+ * case than pathToFileURL produced for the same file.
+ */
+export function sameUri(a: string, b: string): boolean {
+  if (a === b) return true
+  try {
+    const left = fileURLToPath(a)
+    const right = fileURLToPath(b)
+    return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : false
+  } catch {
+    return false
+  }
 }
 
 /** The directory a server runs in for this file, or undefined when the server does not apply to it. */
@@ -138,6 +159,7 @@ async function cargoWorkspace(crate: string, project: string): Promise<string> {
 export class LspManager {
   readonly #settings: Settings
   readonly #root: string
+  readonly #allowOutside: boolean
   readonly #entries = new Map<string, Entry>()
   readonly #versions = new Map<string, number>()
   readonly #deleted = new Set<string>()
@@ -149,6 +171,11 @@ export class LspManager {
   constructor(settings: Settings, root: string) {
     this.#settings = settings
     this.#root = root
+    this.#allowOutside = settings.allowOutside
+  }
+
+  get allowOutside(): boolean {
+    return this.#allowOutside
   }
 
   serversFor(file: string): ServerConfig[] {
@@ -212,13 +239,16 @@ export class LspManager {
   async #sync(file: string, uri: string, signal?: AbortSignal): Promise<Synced[]> {
     signal?.throwIfAborted()
     // OpenCode 1 asked before touching files outside the project; plugins cannot ask, so they are never sent.
-    const text = await readInside(this.#root, file)
+    const text = await readInside(this.#root, file, this.#allowOutside)
     signal?.throwIfAborted()
     const ready: { target: Target; client: LspClient }[] = []
     for (const target of await this.#targets(file)) {
       signal?.throwIfAborted()
       // Initialization is shared; cancelling one tool must not break another caller's server.
-      const client = await abortable(this.#client(target).catch(() => undefined), signal)
+      const client = await abortable(this.#client(target).catch((error) => {
+        this.#log(`${target.key}: ${errorMessage(error)}`)
+        return undefined
+      }), signal)
       signal?.throwIfAborted()
       if (client) ready.push({ target, client })
     }
@@ -272,7 +302,7 @@ export class LspManager {
     const others = new Map<string, Diagnostic[]>()
     for (const { client, sentAt } of synced) {
       for (const [other, published] of this.#published.get(client.id) ?? []) {
-        if (other === uri || published.at < sentAt) continue
+        if (sameUri(other, uri) || published.at < sentAt) continue
         others.set(other, [...(others.get(other) ?? []), ...published.diagnostics])
       }
     }
@@ -303,7 +333,7 @@ export class LspManager {
             this.#store(client.id, uri, report.items, sent)
             return report.items
           }
-          return this.#published.get(client.id)?.get(uri)?.diagnostics
+          return this.#publishedFor(client.id, uri)?.diagnostics
         }
       } catch (error) {
         signal?.throwIfAborted()
@@ -320,7 +350,7 @@ export class LspManager {
     return new Promise((resolve, reject) => {
       let settle: ReturnType<typeof setTimeout> | undefined
       const current = () => {
-        const published = this.#published.get(serverID)?.get(uri)
+        const published = [...(this.#published.get(serverID) ?? [])].find(([key]) => sameUri(key, uri))?.[1]
         if (!published || published.at < since) return undefined
         if (published.version !== undefined && published.version < version) return undefined
         return published
@@ -439,14 +469,26 @@ export class LspManager {
   }
 
   #store(serverID: string, uri: string, diagnostics: Diagnostic[], version: number | undefined): void {
-    if (this.#deleted.has(uri)) return
+    if ([...this.#deleted].some((deleted) => sameUri(deleted, uri))) return
     const published = this.#published.get(serverID) ?? new Map<string, Published>()
+    // Reuse a key with the same file so Windows drive-letter case differences do not split one file into two entries.
+    let key = uri
+    for (const existing of published.keys()) {
+      if (sameUri(existing, uri)) { key = existing; break }
+    }
     // A late report for an older version describes contents that are gone.
-    const latest = this.#versions.get(uri) ?? published.get(uri)?.version
+    const latest = this.#versions.get(uri) ?? published.get(key)?.version
     if (version !== undefined && latest !== undefined && version < latest) return
-    published.set(uri, { diagnostics, at: Date.now(), version })
+    published.set(key, { diagnostics, at: Date.now(), version })
     this.#published.set(serverID, published)
     this.#notify(serverID)
+  }
+
+  #publishedFor(serverID: string, uri: string): Published | undefined {
+    const published = this.#published.get(serverID)
+    if (!published) return undefined
+    for (const [key, value] of published) if (sameUri(key, uri)) return value
+    return undefined
   }
 
   #notify(serverID: string): void {

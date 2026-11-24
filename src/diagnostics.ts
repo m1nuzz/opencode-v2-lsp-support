@@ -34,7 +34,7 @@ export function afterTool(manager: LspManager, root: string, diagnostics: boolea
 
 /** Files with a server that resolve inside the project. OpenCode 1 asked before touching others; plugins cannot ask. */
 async function checkable(manager: LspManager, root: string, files: string[]): Promise<string[]> {
-  const inside = await Promise.all(files.map((file) => manager.serversFor(file).length > 0 && insideProject(root, file)))
+  const inside = await Promise.all(files.map((file) => manager.serversFor(file).length > 0 && insideProject(root, file, manager.allowOutside)))
   return files.filter((_, index) => inside[index])
 }
 
@@ -80,7 +80,7 @@ async function report(manager: LspManager, root: string, event: Completed, chang
     }
     if (files.includes(file)) continue
     const block = diagnosticsReport(file, diagnostics)
-    if (block && await insideProject(root, file)) elsewhere.push(block)
+    if (block && await insideProject(root, file, manager.allowOutside)) elsewhere.push(block)
   }
   if (elsewhere.length) sections.push(`LSP errors detected in other files:\n${elsewhere.join("\n")}`)
   if (sections.length === 0) return
