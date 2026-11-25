@@ -44,7 +44,7 @@ export function resolveSettings(directory: string, options: Record<string, unkno
     initializeTimeoutMs: positive(options.initializeTimeoutMs, 45_000),
     requestTimeoutMs: positive(options.requestTimeoutMs, 15_000),
     debug,
-    allowOutside: options.allowOutside !== false,
+    allowOutside: options.allowOutside === true,
   }
 }
 

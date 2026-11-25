@@ -1,9 +1,3 @@
-// OpenCode 2 accepts an `lsp` config block but has no LSP runtime. This plugin
-// supplies OpenCode 1's two LSP features from that same block: the `lsp` tool
-// and error diagnostics appended to write, edit, and patch results.
-//
-// The default export is the plain `{ id, setup }` shape OpenCode 2 loads, so
-// the plugin needs no `@opencode/plugin` install.
 import { resolveSettings } from "./src/config.ts"
 import { afterTool } from "./src/diagnostics.ts"
 import { LspManager } from "./src/manager.ts"
@@ -19,7 +13,7 @@ export default {
 
     const manager = new LspManager(settings, root)
     const tools = await ctx.tool.transform((editor: any) => editor.add(lspTool(manager, root)))
-    const hook = await ctx.tool.hook("execute.after", afterTool(manager, root, settings.diagnostics))
+    const hook = await ctx.tool.hook("execute.after", afterTool(manager, root, settings.diagnostics, ctx.session))
     return async () => {
       await hook.dispose()
       await tools.dispose()

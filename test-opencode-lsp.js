@@ -297,7 +297,7 @@ test("hooks never send files outside the project, keep versions in order, and cl
   config.lsp.fake.env.FAKE_LOG = log
   await writeFile(join(root, "opencode.json"), JSON.stringify(config))
   const outside = await realpath(await mkdtemp(join(tmpdir(), "opencode-lsp-outside-")))
-  const { after, cleanup } = await start(root)
+  const { after, cleanup } = await start(root, { allowOutside: false })
   const sent = async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line))
   try {
     await writeFile(join(outside, "secret.ts"), "ERROR secret\n")
@@ -623,7 +623,7 @@ test("other-file diagnostics exclude outside paths and symlinks but keep inside 
       pathToFileURL(join(root, "missing.ts")).href,
     ]) }
     await writeFile(join(root, "opencode.json"), JSON.stringify(config))
-    const started = await start(root)
+    const started = await start(root, { allowOutside: false })
     cleanup = started.cleanup
     await writeFile(join(root, "a.ts"), "BREAK_OTHER\n")
     const event = completed("edit", { path: "a.ts" }, { content: "Edited a.ts" })
@@ -1069,7 +1069,7 @@ test("a server that violates the diagnostic protocol stays disabled across edits
 
 test("a query stops when its file cannot be synced, even with a cold server already running", async () => {
   const root = await project(structuredClone(FAKE))
-  const manager = new LspManager(resolveSettings(root, {}, { OPENCODE_CONFIG_DIR: join(root, "no-global") }), root)
+  const manager = new LspManager(resolveSettings(root, { allowOutside: false }, { OPENCODE_CONFIG_DIR: join(root, "no-global") }), root)
   const outside = await realpath(await mkdtemp(join(tmpdir(), "opencode-lsp-outside-")))
   try {
     await writeFile(join(root, "a.ts"), "inside\n")

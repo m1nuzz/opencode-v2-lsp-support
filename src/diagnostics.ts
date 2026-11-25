@@ -21,14 +21,21 @@ interface Completed {
  * in the background so the first edit does not wait for a cold start. Deleted
  * and moved-away files are closed so servers stop analyzing their old contents.
  */
-export function afterTool(manager: LspManager, root: string, diagnostics: boolean) {
-  return async (event: { tool: string; status: string; input: unknown }) => {
+export function afterTool(manager: LspManager, root: string, diagnostics: boolean, session?: { synthetic?: (input: { sessionID: string; text: string; description?: string; metadata?: Record<string, unknown> }) => Promise<unknown> }) {
+  return async (event: { tool: string; status: string; input: unknown; result: Completed["result"]; output?: string; sessionID?: string }) => {
     if (event.status !== "completed") return
     if (event.tool === "read") return warm(manager, root, event.input)
     if (!MUTATING_TOOLS.has(event.tool)) return
     const { changed, deleted } = touchedFiles(event as Completed, root)
     await Promise.all(deleted.map((file) => manager.close(file)))
-    if (diagnostics) await report(manager, root, event as Completed, changed)
+    const sections = diagnostics ? await report(manager, root, event as Completed, changed) : []
+    if (session && typeof session.synthetic === "function" && event.sessionID && sections.length > 0) {
+      try {
+        await session.synthetic({ sessionID: event.sessionID, text: sections.join("\n\n"), description: "LSP diagnostics" })
+      } catch {
+        // Synthetic injection is best-effort; never break the tool result.
+      }
+    }
   }
 }
 
@@ -46,9 +53,9 @@ function warm(manager: LspManager, root: string, input: unknown): void {
     .catch(() => undefined)
 }
 
-async function report(manager: LspManager, root: string, event: Completed, changed: string[]): Promise<void> {
+async function report(manager: LspManager, root: string, event: Completed, changed: string[]): Promise<string[]> {
   const files = await checkable(manager, root, changed)
-  if (files.length === 0) return
+  if (files.length === 0) return []
 
   const sections: string[] = []
   const shown: Record<string, Diagnostic[]> = {}
@@ -83,7 +90,7 @@ async function report(manager: LspManager, root: string, event: Completed, chang
     if (block && await insideProject(root, file, manager.allowOutside)) elsewhere.push(block)
   }
   if (elsewhere.length) sections.push(`LSP errors detected in other files:\n${elsewhere.join("\n")}`)
-  if (sections.length === 0) return
+  if (sections.length === 0) return sections
 
   // OpenCode's terminal UI shows `metadata.diagnostics[input.path]` under the edit.
   const existing = event.result.metadata?.diagnostics
@@ -92,6 +99,7 @@ async function report(manager: LspManager, root: string, event: Completed, chang
     diagnostics: { ...(isRecord(existing) ? existing : {}), ...shown },
   }
   append(event.result, `\n\n${sections.join("\n\n")}`)
+  return sections
 }
 
 /** Files the tool created or changed, and files it deleted, as absolute paths. */
